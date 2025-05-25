@@ -4,12 +4,20 @@ from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import FAISS
-from langchain_community.llms import HuggingFaceHub
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 import os
+import google.generativeai as genai
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+
+load_dotenv()
 
 st.set_page_config(page_title="Chat with PDFs", page_icon=":books:")
+
+# Configure Google Generative AI
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+genai.configure(api_key=GOOGLE_API_KEY)
 
 def get_pdf_text(pdf_docs):
     text = ""
@@ -33,12 +41,14 @@ def get_vectorstore(text_chunk):
     return FAISS.from_texts(text_chunk, embedding=embeddings)
 
 def get_convo(vectorstore):
-    hf_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")  # Make sure it's set in .env
-    llm = HuggingFaceHub(
-        repo_id="google/flan-t5-large",
-        model_kwargs={"temperature": 0.2},
-        huggingfacehub_api_token=hf_token
+    # Using Gemini model through LangChain integration
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        temperature=0.2,
+        google_api_key=GOOGLE_API_KEY,
+        convert_system_message_to_human=True
     )
+
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
@@ -54,7 +64,9 @@ def handle_user_question(user_question):
         st.warning("Please upload and process documents first.")
 
 def main():
-    load_dotenv()
+    if not GOOGLE_API_KEY:
+        st.error("GOOGLE_API_KEY not found in environment variables. Please add it to your .env file.")
+        return
 
     if "convo" not in st.session_state:
         st.session_state.convo = None
