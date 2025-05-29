@@ -1,75 +1,27 @@
 import streamlit as st
-from dotenv import load_dotenv
-from PyPDF2 import PdfReader
-from langchain.text_splitter import CharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationalRetrievalChain
-import os
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
-
-
-load_dotenv()
+import requests
+from chatbot_core import chatbot
 
 st.set_page_config(page_title="Chat with PDFs", page_icon=":books:")
 
-# Configure Google Generative AI
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-genai.configure(api_key=GOOGLE_API_KEY)
-
-def get_pdf_text(pdf_docs):
-    text = ""
-    for pdf in pdf_docs:
-        pdf_reader = PdfReader(pdf)
-        for page in pdf_reader.pages:
-            text += page.extract_text()
-    return text
-
-def get_pdf_chunk(raw_text):
-    text_splitter = CharacterTextSplitter(
-        separator="\n",
-        chunk_size=1000,
-        chunk_overlap=200,
-        length_function=len
-    )
-    return text_splitter.split_text(raw_text)
-
-def get_vectorstore(text_chunk):
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    return FAISS.from_texts(text_chunk, embedding=embeddings)
-
-def get_convo(vectorstore):
-    # Using Gemini model through LangChain integration
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        temperature=0.2,
-        google_api_key=GOOGLE_API_KEY,
-        convert_system_message_to_human=True
-    )
-
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    return ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=vectorstore.as_retriever(),
-        memory=memory
-    )
-
 def handle_user_question(user_question):
-    if st.session_state.convo is not None:
-        response = st.session_state.convo({"question": user_question})
-        st.write("**Answer:**", response['answer'])
+    """Handle user question using core chatbot logic"""
+    if st.session_state.conversation_initialized:
+        try:
+            result = chatbot.ask_question(user_question)
+            st.write("**Answer:**", result['answer'])
+        except Exception as e:
+            st.error(f"Error: {e}")
     else:
         st.warning("Please upload and process documents first.")
 
 def main():
-    if not GOOGLE_API_KEY:
-        st.error("GOOGLE_API_KEY not found in environment variables. Please add it to your .env file.")
-        return
-
-    if "convo" not in st.session_state:
-        st.session_state.convo = None
+    # Initialize session state
+    if "conversation_initialized" not in st.session_state:
+        st.session_state.conversation_initialized = False
+        # Try to load existing vectorstore
+        if chatbot.initialize_from_saved_vectorstore():
+            st.session_state.conversation_initialized = True
 
     st.header("Chat with your PDFs")
 
@@ -80,16 +32,41 @@ def main():
     with st.sidebar:
         st.subheader("Your documents")
         pdf_docs = st.file_uploader("Upload your PDF files", type=["pdf"], accept_multiple_files=True)
+        
         if st.button("Process Documents"):
             if pdf_docs:
                 with st.spinner("Processing..."):
-                    raw_text = get_pdf_text(pdf_docs)
-                    text_chunks = get_pdf_chunk(raw_text)
-                    vectorstore = get_vectorstore(text_chunks)
-                    st.session_state.convo = get_convo(vectorstore)
-                    st.success("Documents processed! You can now ask questions.")
+                    try:
+                        result = chatbot.process_documents(pdf_docs)
+                        st.session_state.conversation_initialized = True
+                        
+                        # Notify FastAPI server to reload
+                        try:
+                            requests.post('http://localhost:8000/reload-vectorstore')
+                        except:
+                            pass  # FastAPI server might not be running
+                        
+                        st.success(f"Documents processed! Created {result['chunks_created']} chunks.")
+                    except Exception as e:
+                        st.error(f"Error processing documents: {e}")
             else:
                 st.error("Please upload at least one PDF file.")
+        
+        # Status information
+        st.subheader("Status")
+        status = chatbot.get_status()
+        st.json(status)
+        
+        # API test button
+        st.subheader("API Testing")
+        if st.button("Test FastAPI Endpoint"):
+            try:
+                response = requests.post("http://localhost:8000/chat", 
+                    json={"question": "What is this document about?", "conversation_id": "123"}
+                )
+                st.json(response.json())
+            except Exception as e:
+                st.error(f"API test failed: {e}")
 
 if __name__ == "__main__":
     main()
