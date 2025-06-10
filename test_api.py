@@ -36,6 +36,24 @@ def test_direct_chatbot():
     except Exception as e:
         print(f"Direct chatbot test failed: {e}")
 
+def test_chatwoot_webhook_validated():
+    """Test the new validated Chatwoot webhook endpoint"""
+    try:
+        payload = {
+            "message": "What is this document about?",
+            "conversation_id": "test-123",
+            "contact": {
+                "email": "test@example.com"
+            }
+        }
+        
+        response = requests.post("http://localhost:8000/chatwoot-webhook", json=payload)
+        print("Chatwoot Webhook Status:", response.status_code)
+        print("Chatwoot Response:", json.dumps(response.json(), indent=2))
+        
+    except Exception as e:
+        print(f"Chatwoot webhook test failed: {e}")
+
 if __name__ == "__main__":
     print("Testing FastAPI endpoints...")
     print("\n1. Health Check:")
@@ -46,3 +64,6 @@ if __name__ == "__main__":
     
     print("\n3. Direct Chatbot Test:")
     test_direct_chatbot()
+
+    print("\n4. Chatwoot Webhook Test:")
+    test_chatwoot_webhook_validated()

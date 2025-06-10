@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 import uvicorn
 import logging
@@ -24,6 +24,20 @@ class ChatResponse(BaseModel):
 
 class ProcessDocumentsRequest(BaseModel):
     pdf_paths: list[str]  # List of PDF file paths
+
+# New Pydantic models for Chatwoot webhook
+class ContactInfo(BaseModel):
+    email: str = Field(..., description="Contact email address")
+
+class ChatwootWebhookRequest(BaseModel):
+    message: str = Field(..., description="The message content from the user")
+    conversation_id: str = Field(..., description="Chatwoot conversation ID")
+    contact: ContactInfo = Field(..., description="Contact information")
+
+class ChatwootWebhookResponse(BaseModel):
+    response: str
+    conversation_id: str
+    status: int
 
 @app.on_event("startup")
 async def startup_event():
@@ -97,87 +111,55 @@ async def reload_vectorstore():
         logger.error(f"Error reloading vectorstore: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to reload vectorstore: {str(e)}")
 
-# Chatwoot webhook endpoint (optional - for direct webhook integration)
-@app.post("/chatwoot-webhook")
-async def chatwoot_webhook(webhook_data: dict):
-    """Handle Chatwoot webhook events"""
+# Updated Chatwoot webhook endpoint with proper validation
+@app.post("/chatwoot-webhook", response_model=ChatwootWebhookResponse)
+async def chatwoot_webhook_validated(webhook_data: ChatwootWebhookRequest):
+    """
+    Handle Chatwoot webhook with proper validation
+    Accepts structured data with message, conversation_id, and contact info
+    """
     try:
-        logger.info(f"Received Chatwoot webhook")
-        
-        # DEBUGGING: Dump each webhook to a file
-        import json
-        import os
-        os.makedirs("webhook_logs", exist_ok=True)
-        with open(f"webhook_logs/webhook_{len(os.listdir('webhook_logs'))}.json", "w") as f:
-            f.write(json.dumps(webhook_data, indent=2))
-        
-        # Continue with existing code
-        # Skip non-message events
-        if 'event' in webhook_data and webhook_data['event'] not in ['message_created', 'conversation_updated']:
-            logger.info(f"Skipping event type: {webhook_data['event']}")
-            return {"status": "ignored"}
-        
-        # IMPORTANT: Only process incoming messages from customers
-        message_content = None
-        conversation_id = None
-        
-        # Case 1: Direct message_created event
-        if webhook_data.get('event') == 'message_created' and 'message' in webhook_data:
-            message = webhook_data['message']
-            if message.get('message_type') == 'incoming' or message.get('message_type') == 1:
-                message_content = message.get('content')
-                conversation_id = webhook_data.get('conversation', {}).get('id')
-                logger.info(f"Processing message_created: '{message_content}'")
-                
-        # Case 2: From messages array in conversation_updated
-        elif 'messages' in webhook_data and webhook_data['messages']:
-            # Get conversation ID
-            conversation_id = webhook_data.get('id')
-            
-            # Find incoming message
-            for message in webhook_data['messages']:
-                msg_type = message.get('message_type')
-                if msg_type == 'incoming' or msg_type == 1:
-                    message_content = message.get('content')
-                    logger.info(f"Processing from messages array: '{message_content}'")
-                    break
-        
-        # Exit if no message to process
-        if not message_content or not conversation_id:
-            logger.info("No actionable message found")
-            return {"status": "ignored - no actionable message"}
-        
-        # Process with chatbot
-        logger.info(f"Processing question: '{message_content}' for conversation: {conversation_id}")
+        logger.info(f"Processing validated webhook for conversation {webhook_data.conversation_id}")
+        logger.info(f"Message: '{webhook_data.message}' from {webhook_data.contact.email}")
         
         # Check if vectorstore is available
         if chatbot.vectorstore is None:
             if not chatbot.initialize_from_saved_vectorstore():
                 logger.error("No documents processed yet")
-                return {"status": "error", "message": "No documents processed"}
+                raise HTTPException(
+                    status_code=503, 
+                    detail="Knowledge base not available. Please process documents first."
+                )
         
-        # Get answer from chatbot
-        result = chatbot.ask_question(message_content, conversation_id)
+        # Process the message using the chatbot (equivalent to query_knowledge_base)
+        result = chatbot.ask_question(webhook_data.message, webhook_data.conversation_id)
         answer = result['answer']
         
-        logger.info(f"Generated answer: {answer[:100]}...")
+        logger.info(f"Generated answer for {webhook_data.contact.email}: {answer[:100]}...")
         
-        # Send reply back to Chatwoot
-        from fix_chatwoot import send_reply_to_chatwoot
-        success = send_reply_to_chatwoot(conversation_id, answer)
+        # Optional: Send reply back to Chatwoot automatically
+        try:
+            from fix_chatwoot import send_reply_to_chatwoot
+            send_success = send_reply_to_chatwoot(webhook_data.conversation_id, answer)
+            if send_success:
+                logger.info("Reply automatically sent to Chatwoot")
+        except Exception as e:
+            logger.warning(f"Could not auto-send to Chatwoot: {e}")
         
-        if success:
-            logger.info("Reply sent successfully!")
-            return {"status": "success", "message": "Reply sent"}
-        else:
-            logger.error("Failed to send reply")
-            return {"status": "error", "message": "Failed to send reply"}
-            
+        return ChatwootWebhookResponse(
+            response=answer,
+            conversation_id=webhook_data.conversation_id,
+            status=200
+        )
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/debug-conversation/{conversation_id}")
 async def debug_conversation(conversation_id: str):
