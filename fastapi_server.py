@@ -169,3 +169,12 @@ async def root():
             "view_latest": "GET /answers/latest - View latest answer"
         }
     }
+
+# The Connection:
+# /answer (POST) → Writes to stored_answers
+# /answers/latest (GET) → Reads from stored_answers
+# /answers/all (GET) → Reads from stored_answers
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
