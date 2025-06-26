@@ -1,18 +1,12 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceBgeEmbeddings
-from langchain.chains import RetrievalQA
-from langchain_community.llms import HuggingFaceEndpoint
+from fastapi.middleware.cors import CORSMiddleware
 import os
 import requests
 import logging
-import tempfile
-from PyPDF2 import PdfReader
-from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
+from chatbot_core import chatbot
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -41,45 +35,12 @@ class AnswerRequest(BaseModel):
     conversation_id: Optional[str] = "default"
     timestamp: Optional[str] = None
 
-# Embedding model
-model_name = "BAAI/bge-base-en-v1.5"
-encode_kwargs = {'normalize_embeddings': True}
-embedding_model = HuggingFaceBgeEmbeddings(model_name=model_name, encode_kwargs=encode_kwargs)
-
-# RAG pipeline
-def create_rag_chain_from_pdfs(pdf_urls: List[str]) -> RetrievalQA:
-    all_text = ""
-    for url in pdf_urls:
-        try:
-            response = requests.get(url)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
-                tmp_pdf.write(response.content)
-                tmp_pdf_path = tmp_pdf.name
-
-            reader = PdfReader(tmp_pdf_path)
-            all_text += "\n".join(page.extract_text() for page in reader.pages if page.extract_text())
-
-        except Exception as e:
-            logger.error(f"Error processing PDF at {url}: {e}")
-
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    texts = text_splitter.split_text(all_text)
-    vectordb = Chroma.from_texts(texts, embedding=embedding_model)
-    retriever = vectordb.as_retriever()
-    llm = HuggingFaceEndpoint(
-        repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
-        temperature=0.2,
-        max_new_tokens=500,
-        huggingfacehub_api_token=os.environ["HUGGINGFACEHUB_API_TOKEN"]
-    )
-    return RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
-
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
     logger.info(f"Chat request received: {request.question}")
     try:
-        qa_chain = create_rag_chain_from_pdfs(request.pdf_urls)
-        result = qa_chain.run(request.question)
+        # Use your existing RAG system!
+        response = chatbot.ask_question(request.question, request.conversation_id)
 
         # Forward answer to /answers
         try:
@@ -88,18 +49,18 @@ async def chat_endpoint(request: ChatRequest):
                 json={
                     "conversation_id": request.conversation_id,
                     "question": request.question,
-                    "answer": result
+                    "answer": response["answer"]
                 }
             )
         except Exception as e:
             logger.warning(f"Could not forward to /answers: {e}")
 
-        return {"answer": result}
+        return {"answer": response["answer"]}
     except Exception as e:
         logger.error(f"Error processing question: {e}")
         return {"error": str(e)}
 
-# Store answers in memory (for demo purposes)
+# Store answers in memory 
 stored_answers = []
 
 # Modify your existing receive_answer function:
